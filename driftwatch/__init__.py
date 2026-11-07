@@ -1,5 +1,10 @@
 """driftwatch: Periodic fact drift detector and debounce alert engine."""
 
+from driftwatch.extractor import (
+    HttpFetcher,
+    extract_value,
+    validate_extracted_value,
+)
 from driftwatch.models import (
     AlertRecord,
     Base,
@@ -17,7 +22,10 @@ __all__ = [
     "CheckResult",
     "CheckSnapshotRow",
     "DriftAlertRow",
+    "HttpFetcher",
     "TargetCreateRequest",
     "TargetSnapshot",
     "WatchTargetRow",
+    "extract_value",
+    "validate_extracted_value",
 ]
