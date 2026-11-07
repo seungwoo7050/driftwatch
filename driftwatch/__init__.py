@@ -15,6 +15,7 @@ from driftwatch.models import (
     TargetSnapshot,
     WatchTargetRow,
 )
+from driftwatch.store import DriftStore
 
 __all__ = [
     "AlertRecord",
@@ -22,6 +23,7 @@ __all__ = [
     "CheckResult",
     "CheckSnapshotRow",
     "DriftAlertRow",
+    "DriftStore",
     "HttpFetcher",
     "TargetCreateRequest",
     "TargetSnapshot",
