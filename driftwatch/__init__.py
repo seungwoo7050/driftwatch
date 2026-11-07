@@ -1,5 +1,7 @@
 """driftwatch: Periodic fact drift detector and debounce alert engine."""
 
+from driftwatch.app import create_app
+from driftwatch.cli import main
 from driftwatch.extractor import (
     HttpFetcher,
     extract_value,
@@ -31,6 +33,8 @@ __all__ = [
     "TargetCreateRequest",
     "TargetSnapshot",
     "WatchTargetRow",
+    "create_app",
     "extract_value",
+    "main",
     "validate_extracted_value",
 ]

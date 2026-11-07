@@ -182,7 +182,10 @@ class DriftRunner:
             if t.last_checked_at is None:
                 due_targets.append(t.target_id)
             else:
-                elapsed = (now - t.last_checked_at).total_seconds()
+                last_checked = t.last_checked_at
+                if last_checked.tzinfo is None:
+                    last_checked = last_checked.replace(tzinfo=timezone.utc)
+                elapsed = (now - last_checked).total_seconds()
                 if elapsed >= t.interval_seconds:
                     due_targets.append(t.target_id)
 

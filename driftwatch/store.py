@@ -24,6 +24,14 @@ from driftwatch.models import (
 
 def _to_snapshot(row: WatchTargetRow) -> TargetSnapshot:
     """Map ORM row to immutable TargetSnapshot Pydantic model."""
+    last_checked = row.last_checked_at
+    if last_checked is not None and last_checked.tzinfo is None:
+        last_checked = last_checked.replace(tzinfo=timezone.utc)
+
+    created = row.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+
     return TargetSnapshot(
         target_id=row.target_id,
         name=row.name,
@@ -40,13 +48,17 @@ def _to_snapshot(row: WatchTargetRow) -> TargetSnapshot:
         last_value=row.last_value,
         consecutive_failures=row.consecutive_failures,
         status=row.status,
-        last_checked_at=row.last_checked_at,
-        created_at=row.created_at,
+        last_checked_at=last_checked,
+        created_at=created,
     )
 
 
 def _to_alert_record(row: DriftAlertRow) -> AlertRecord:
     """Map ORM alert row to immutable AlertRecord Pydantic model."""
+    created = row.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+
     return AlertRecord(
         alert_id=row.alert_id,
         target_id=row.target_id,
@@ -55,7 +67,7 @@ def _to_alert_record(row: DriftAlertRow) -> AlertRecord:
         current_value=row.current_value,
         message=row.message,
         webhook_delivered=row.webhook_delivered,
-        created_at=row.created_at,
+        created_at=created,
     )
 
 
