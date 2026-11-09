@@ -1,7 +1,6 @@
 """driftwatch: Periodic fact drift detector and debounce alert engine."""
 
 from driftwatch.app import create_app
-from driftwatch.cli import main
 from driftwatch.extractor import (
     HttpFetcher,
     extract_value,
@@ -13,12 +12,21 @@ from driftwatch.models import (
     CheckResult,
     CheckSnapshotRow,
     DriftAlertRow,
+    DriftSettings,
     TargetCreateRequest,
     TargetSnapshot,
     WatchTargetRow,
 )
 from driftwatch.runner import DriftRunner, MetricsTracker
 from driftwatch.store import DriftStore
+
+
+def main(argv: list[str] | None = None) -> None:
+    """CLI application entrypoint."""
+    from driftwatch.cli import main as _main
+
+    _main(argv)
+
 
 __all__ = [
     "AlertRecord",
@@ -27,6 +35,7 @@ __all__ = [
     "CheckSnapshotRow",
     "DriftAlertRow",
     "DriftRunner",
+    "DriftSettings",
     "DriftStore",
     "HttpFetcher",
     "MetricsTracker",

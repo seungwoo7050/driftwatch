@@ -7,6 +7,12 @@ import re
 from typing import Any
 
 import httpx
+from jsonpath_ng.parser import parse as parse_jsonpath
+from pydantic import TypeAdapter, ValidationError
+
+_ANY_ADAPTER = TypeAdapter(Any)
+_INT_ADAPTER = TypeAdapter(int)
+_FLOAT_ADAPTER = TypeAdapter(float)
 
 
 class HttpFetcher:
@@ -42,41 +48,61 @@ def extract_value(raw_body: str, extractor_type: str, selector: str) -> str:
         raise ValueError(f"Unsupported extractor_type: '{extractor_type}'")
 
 
-def _extract_json_path(raw_body: str, selector: str) -> str:
-    """Traverse dot-delimited path through nested JSON objects and arrays."""
-    try:
-        data: Any = json.loads(raw_body)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Malformed JSON body: {exc}") from exc
-
-    parts = [p.strip() for p in selector.split(".") if p.strip()]
-    if not parts:
-        raise ValueError("Selector path cannot be empty")
-
-    current: Any = data
-    for part in parts:
+def _diagnose_missing_path(data: Any, selector: str) -> str:
+    """Diagnose missing key or list index out of range for detailed error reporting."""
+    tokens = [p.strip() for p in re.split(r"\.|\[(\d+)\]", selector) if p is not None and p.strip() and p != "$"]
+    current = data
+    for token in tokens:
         if isinstance(current, dict):
-            if part in current:
-                current = current[part]
+            if token in current:
+                current = current[token]
             else:
-                raise ValueError(f"Key '{part}' not found in JSON object")
+                return f"Key '{token}' not found in JSON object"
         elif isinstance(current, list):
             try:
-                idx = int(part)
-            except ValueError as exc:
-                raise ValueError(f"Cannot index list with non-integer token '{part}'") from exc
+                idx = int(token)
+            except ValueError:
+                return f"Cannot index list with non-integer token '{token}'"
             if 0 <= idx < len(current):
                 current = current[idx]
             else:
-                raise ValueError(f"List index {idx} out of range (length {len(current)})")
+                return f"List index {idx} out of range (length {len(current)})"
         else:
-            raise ValueError(f"Cannot traverse token '{part}' on scalar value of type {type(current).__name__}")
+            return f"Cannot traverse token '{token}' on scalar value of type {type(current).__name__}"
+    return f"JSON path '{selector}' not found"
 
-    if current is None:
+
+def _extract_json_path(raw_body: str, selector: str) -> str:
+    """Extract value using jsonpath_ng expressions with dot or bracket syntax."""
+    cleaned_selector = selector.strip()
+    if not cleaned_selector:
+        raise ValueError("Selector path cannot be empty")
+
+    try:
+        data: Any = _ANY_ADAPTER.validate_json(raw_body)
+    except Exception as exc:
+        raise ValueError(f"Malformed JSON body: {exc}") from exc
+
+    normalized = re.sub(r"\.(\d+)(?=\.|$)", r"[\1]", cleaned_selector)
+    if not normalized.startswith("$") and not normalized.startswith("["):
+        normalized = "$." + normalized
+
+    try:
+        expr = parse_jsonpath(normalized)
+    except Exception as exc:
+        raise ValueError(f"Invalid JSON path expression '{selector}': {exc}") from exc
+
+    matches = expr.find(data)
+    if not matches:
+        detail = _diagnose_missing_path(data, cleaned_selector)
+        raise ValueError(detail)
+
+    val = matches[0].value
+    if val is None:
         return ""
-    if isinstance(current, (dict, list)):
-        return json.dumps(current, separators=(",", ":"))
-    return str(current)
+    if isinstance(val, (dict, list)):
+        return json.dumps(val, separators=(",", ":"))
+    return str(val)
 
 
 def _extract_regex(raw_body: str, selector: str) -> str:
@@ -105,23 +131,23 @@ def validate_extracted_value(
     min_value: float | None,
     max_value: float | None,
 ) -> tuple[str, str | None]:
-    """Validate and normalize value, returning (normalized_string, violation_detail | None)."""
+    """Validate and normalize value using TypeAdapter, returning (normalized_string, violation_detail | None)."""
     normalized_type = expected_type.strip().lower()
+    cleaned = raw_val.strip()
 
     if normalized_type == "int":
-        cleaned = raw_val.strip()
         try:
-            int_val = int(cleaned) if "." not in cleaned else int(float(cleaned))
-        except ValueError:
+            int_val = _INT_ADAPTER.validate_python(int(float(cleaned)))
+        except (ValueError, ValidationError):
             return cleaned, f"Value '{cleaned}' cannot be converted to int"
 
         norm_str = str(int_val)
         if expected_value is not None:
             try:
-                exp_int = int(expected_value.strip())
+                exp_int = _INT_ADAPTER.validate_python(int(float(expected_value.strip())))
                 if int_val != exp_int:
                     return norm_str, f"Expected value {exp_int}, got {int_val}"
-            except ValueError:
+            except (ValueError, ValidationError):
                 pass
 
         if min_value is not None and float(int_val) < min_value:
@@ -132,19 +158,18 @@ def validate_extracted_value(
         return norm_str, None
 
     elif normalized_type == "float":
-        cleaned = raw_val.strip()
         try:
-            flt_val = float(cleaned)
-        except ValueError:
+            flt_val = _FLOAT_ADAPTER.validate_python(float(cleaned))
+        except (ValueError, ValidationError):
             return cleaned, f"Value '{cleaned}' cannot be converted to float"
 
         norm_str = str(flt_val)
         if expected_value is not None:
             try:
-                exp_flt = float(expected_value.strip())
+                exp_flt = _FLOAT_ADAPTER.validate_python(float(expected_value.strip()))
                 if abs(flt_val - exp_flt) > 1e-9:
                     return norm_str, f"Expected value {exp_flt}, got {flt_val}"
-            except ValueError:
+            except (ValueError, ValidationError):
                 pass
 
         if min_value is not None and flt_val < min_value:
@@ -155,7 +180,6 @@ def validate_extracted_value(
         return norm_str, None
 
     elif normalized_type == "str":
-        cleaned = raw_val.strip()
         if expected_value is not None and cleaned != expected_value.strip():
             return cleaned, f"Expected value '{expected_value.strip()}', got '{cleaned}'"
         return cleaned, None

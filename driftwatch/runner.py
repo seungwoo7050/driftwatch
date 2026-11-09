@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from prometheus_client import CollectorRegistry, Counter, generate_latest
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from driftwatch.extractor import HttpFetcher, extract_value, validate_extracted_value
 from driftwatch.models import AlertRecord, CheckResult
@@ -17,36 +19,38 @@ logger = logging.getLogger(__name__)
 
 
 class MetricsTracker:
-    """Thread-safe Prometheus metrics in-memory counter tracker."""
+    """Thread-safe Prometheus metrics counter tracker using prometheus_client."""
 
-    def __init__(self) -> None:
-        self.checks_total: int = 0
-        self.drifts_total: int = 0
-        self.failures_total: int = 0
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry or CollectorRegistry()
+        self.checks_counter = Counter(
+            "driftwatch_checks_total",
+            "Total number of target checks executed",
+            registry=self.registry,
+        )
+        self.drifts_counter = Counter(
+            "driftwatch_drifts_total",
+            "Total number of detected fact drifts and violations",
+            registry=self.registry,
+        )
+        self.failures_counter = Counter(
+            "driftwatch_failures_total",
+            "Total number of fetch and extraction failures",
+            registry=self.registry,
+        )
 
     def inc_checks(self) -> None:
-        self.checks_total += 1
+        self.checks_counter.inc()
 
     def inc_drifts(self) -> None:
-        self.drifts_total += 1
+        self.drifts_counter.inc()
 
     def inc_failures(self) -> None:
-        self.failures_total += 1
+        self.failures_counter.inc()
 
     def render_prometheus(self) -> str:
         """Render metrics in standard Prometheus exposition format."""
-        lines = [
-            "# HELP driftwatch_checks_total Total number of target checks executed",
-            "# TYPE driftwatch_checks_total counter",
-            f"driftwatch_checks_total {self.checks_total}",
-            "# HELP driftwatch_drifts_total Total number of detected fact drifts and violations",
-            "# TYPE driftwatch_drifts_total counter",
-            f"driftwatch_drifts_total {self.drifts_total}",
-            "# HELP driftwatch_failures_total Total number of fetch and extraction failures",
-            "# TYPE driftwatch_failures_total counter",
-            f"driftwatch_failures_total {self.failures_total}",
-        ]
-        return "\n".join(lines) + "\n"
+        return generate_latest(self.registry).decode("utf-8")
 
 
 class DriftRunner:
@@ -67,7 +71,7 @@ class DriftRunner:
         self.metrics = MetricsTracker()
 
     async def _post_webhook(self, webhook_url: str, alert: AlertRecord) -> None:
-        """Deliver JSON alert webhook and shield delivery state update."""
+        """Deliver JSON alert webhook with tenacity retries and shield delivery state update."""
         payload: dict[str, Any] = {
             "alert_id": alert.alert_id,
             "target_id": alert.target_id,
@@ -80,13 +84,20 @@ class DriftRunner:
         }
 
         try:
-            if self.webhook_client is not None:
-                resp = await self.webhook_client.post(webhook_url, json=payload, timeout=10.0)
-                resp.raise_for_status()
-            else:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(webhook_url, json=payload)
-                    resp.raise_for_status()
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=0.1, min=0.1, max=1.0),
+                retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
+                reraise=True,
+            ):
+                with attempt:
+                    if self.webhook_client is not None:
+                        resp = await self.webhook_client.post(webhook_url, json=payload, timeout=10.0)
+                        resp.raise_for_status()
+                    else:
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            resp = await client.post(webhook_url, json=payload)
+                            resp.raise_for_status()
 
             await asyncio.shield(self.store.mark_alert_delivered(alert.alert_id))
         except Exception as exc:
